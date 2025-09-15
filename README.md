@@ -1,18 +1,26 @@
 # Agent Proxy
 
+![CI](https://github.com/marco-jardim/chatgpt-proxy/actions/workflows/ci.yml/badge.svg)
+[![codecov](https://codecov.io/gh/marco-jardim/chatgpt-proxy/branch/main/graph/badge.svg)](https://codecov.io/gh/marco-jardim/chatgpt-proxy)
+
+![Node.js](https://img.shields.io/badge/Node.js-18%2B%20%7C%2020%2B%20%7C%2022%2B-339933?logo=node.js&logoColor=white)
+![Vitest](https://img.shields.io/badge/Tested%20with-Vitest-6E9F18?logo=vitest&logoColor=white)
+![Supertest](https://img.shields.io/badge/HTTP%20tests-Supertest-000000)
+![Prettier](https://img.shields.io/badge/Code%20style-Prettier-F7B93E?logo=prettier&logoColor=000)
+
 This repository contains a minimal Node.js backend that acts as a secure
 bridge for ChatGPT agents. It listens for signed requests from your
 custom GPT or Agent and performs outbound HTTP calls on its behalf.
 
 ## Features
 
-* **Restricts access to your agent** – requests must include a
+- **Restricts access to your agent** – requests must include a
   `Signature-Agent` header matching `https://chatgpt.com`. You can
   optionally enforce a shared secret via `X-Bridge-Token`.
-* **Proxy to any target** – given a `target` URL and HTTP `method`, the
+- **Proxy to any target** – given a `target` URL and HTTP `method`, the
   server calls the remote API and returns the status, headers and
   response body (JSON or text).
-* **Zero dependencies** – uses only Node.js core modules; no need to
+- **Zero dependencies** – uses only Node.js core modules; no need to
   `npm install`.
 
 ## Usage
@@ -26,10 +34,10 @@ node src/server.js
 
 The server exposes two endpoints:
 
-| Method | Path            | Description                                         |
-|-------:|----------------|-----------------------------------------------------|
-| `GET`  | `/healthz`      | Returns a simple JSON object `{"ok": true}`.         |
-| `POST` | `/action/fetch` | Accepts a JSON payload and proxies the request.      |
+| Method | Path            | Description                                     |
+| -----: | --------------- | ----------------------------------------------- |
+|  `GET` | `/healthz`      | Returns a simple JSON object `{"ok": true}`.    |
+| `POST` | `/action/fetch` | Accepts a JSON payload and proxies the request. |
 
 ### Proxying an API request
 
@@ -48,10 +56,10 @@ Send a POST request to `/action/fetch` with the following JSON body:
 
 Required request headers:
 
-* `Signature-Agent`: must be set to `"https://chatgpt.com"` (the
+- `Signature-Agent`: must be set to `"https://chatgpt.com"` (the
   surrounding quotes are required by the spec). This identifies the
   caller as the ChatGPT agent.
-* `X-Bridge-Token`: value must match `BRIDGE_TOKEN` (if set). This
+- `X-Bridge-Token`: value must match `BRIDGE_TOKEN` (if set). This
   ensures only your agent can use this endpoint.
 
 The response will contain a JSON object:
@@ -69,18 +77,18 @@ The response will contain a JSON object:
 
 ### Notes
 
-* **Signature verification** – This example checks the
+- **Signature verification** – This example checks the
   `Signature-Agent` header to ensure the request claims to be from
   ChatGPT. It does **not** cryptographically verify the `Signature`
   header. For stronger security, implement RFC 9421 signature
   verification by fetching and caching the public keys from
   `https://chatgpt.com/.well-known/http-message-signatures-directory`.
-* **Proxy support** – Outbound requests use Node's built‑in `fetch()`. If
+- **Proxy support** – Outbound requests use Node's built‑in `fetch()`. If
   you need to send traffic through a proxy, set `HTTPS_PROXY` and
   `HTTP_PROXY` environment variables and consider using a library
   such as global-agent or https-proxy-agent. Since this project avoids
   external dependencies, proxy support is not implemented directly.
-* **Allowed methods** – Only `GET`, `POST`, `PUT`, `PATCH` and `DELETE`
+- **Allowed methods** – Only `GET`, `POST`, `PUT`, `PATCH` and `DELETE`
   are supported. Extend `performFetch()` in `src/server.js` to add
   additional methods if necessary.
 

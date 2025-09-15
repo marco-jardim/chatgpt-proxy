@@ -21,7 +21,7 @@
  */
 
 import http from 'node:http';
-import { URL } from 'node:url';
+import { URL, pathToFileURL } from 'node:url';
 
 // Helper: parse JSON safely
 function safeJsonParse(str) {
@@ -34,9 +34,7 @@ function safeJsonParse(str) {
 
 // Read configuration from environment
 const PORT = parseInt(process.env.PORT || '8080', 10);
-const BRIDGE_TOKEN = process.env.BRIDGE_TOKEN || '';
-const EXPECTED_AGENT = (process.env.EXPECTED_AGENT || 'https://chatgpt.com').replace(/^"|"$/g, '');
-const REQUEST_TIMEOUT_MS = parseInt(process.env.REQUEST_TIMEOUT_MS || '25000', 10);
+// Read the rest from process.env at runtime (not cached) so tests/config can update without restart
 
 /**
  * Validate incoming headers to ensure the call originated from the
@@ -53,6 +51,11 @@ const REQUEST_TIMEOUT_MS = parseInt(process.env.REQUEST_TIMEOUT_MS || '25000', 1
  * @returns {string|null}
  */
 function validateRequest(req) {
+  const EXPECTED_AGENT = (process.env.EXPECTED_AGENT || 'https://chatgpt.com').replace(
+    /^"|"$/g,
+    ''
+  );
+  const BRIDGE_TOKEN = process.env.BRIDGE_TOKEN || '';
   // Ensure the signature agent header is present. The spec encloses
   // the value in double quotes; remove quotes before comparison.
   const sigAgentRaw = req.headers['signature-agent'];
@@ -86,9 +89,16 @@ function validateRequest(req) {
 function sanitizeOutboundHeaders(headers) {
   const result = {};
   const forbidden = new Set([
-    'host', 'content-length', 'connection', 'upgrade',
-    'proxy-authorization', 'proxy-authenticate', 'te', 'trailer',
-    'transfer-encoding', 'accept-encoding'
+    'host',
+    'content-length',
+    'connection',
+    'upgrade',
+    'proxy-authorization',
+    'proxy-authenticate',
+    'te',
+    'trailer',
+    'transfer-encoding',
+    'accept-encoding',
   ]);
   for (const [name, value] of Object.entries(headers)) {
     const lower = name.toLowerCase();
@@ -97,6 +107,8 @@ function sanitizeOutboundHeaders(headers) {
     }
     result[name] = value;
   }
+  // Force identity encoding to avoid automatic compression and ensure deterministic behavior
+  result['Accept-Encoding'] = 'identity';
   // Always set a UA so upstream services can identify this bridge
   if (!result['User-Agent'] && !result['user-agent']) {
     result['User-Agent'] = 'agent-proxy/1.0';
@@ -114,6 +126,7 @@ function sanitizeOutboundHeaders(headers) {
  * @returns {Promise<{status: number, headers: Record<string, string>, data: any}>}
  */
 async function performFetch(payload) {
+  const REQUEST_TIMEOUT_MS = parseInt(process.env.REQUEST_TIMEOUT_MS || '25000', 10);
   const { target, method = 'GET', headers = {}, body } = payload;
   // Validate target
   if (!target || typeof target !== 'string' || !/^https?:\/\//i.test(target)) {
@@ -129,7 +142,7 @@ async function performFetch(payload) {
     // Only include body for methods that allow it
     body: ['GET', 'DELETE'].includes(upperMethod) ? undefined : body,
     // Set a timeout via AbortController
-    signal: undefined
+    signal: undefined,
   };
   const controller = new AbortController();
   const timeoutId = setTimeout(() => {
@@ -147,27 +160,25 @@ async function performFetch(payload) {
   response.headers.forEach((value, key) => {
     resultHeaders[key] = value;
   });
-  // Attempt to parse JSON; fall back to text
-  let data;
+  // Read body once as text to allow safe fallback from malformed JSON
+  const rawText = await response.text();
+  let data = rawText;
   const contentType = resultHeaders['content-type'] || '';
   if (/application\/json/i.test(contentType) || /\+json/i.test(contentType)) {
-    try {
-      data = await response.json();
-    } catch {
-      data = await response.text();
+    const parsed = safeJsonParse(rawText);
+    if (parsed !== null) {
+      data = parsed;
     }
-  } else {
-    data = await response.text();
   }
   return {
     status: response.status,
     headers: resultHeaders,
-    data
+    data,
   };
 }
 
-// Main HTTP server
-const server = http.createServer(async (req, res) => {
+// Main HTTP request handler
+async function requestHandler(req, res) {
   try {
     // Only allow POST on /action/fetch and GET on /healthz
     const url = new URL(req.url || '/', 'http://localhost');
@@ -216,10 +227,42 @@ const server = http.createServer(async (req, res) => {
   } catch (err) {
     // Catch‑all error handler
     res.writeHead(500, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: 'internal_server_error', detail: String(err?.message || err) }));
+    res.end(
+      JSON.stringify({ error: 'internal_server_error', detail: String(err?.message || err) })
+    );
   }
-});
+}
 
-server.listen(PORT, () => {
-  console.log(`agent‑proxy listening on port ${PORT}`);
-});
+// Factory to create a server instance (useful for tests)
+export function createServer() {
+  return http.createServer((req, res) => {
+    // Ensure the handler promise rejections are surfaced
+    requestHandler(req, res).catch((err) => {
+      try {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(
+          JSON.stringify({ error: 'internal_server_error', detail: String(err?.message || err) })
+        );
+      } catch {}
+    });
+  });
+}
+
+// Only start listening if this file is executed directly (not when imported by tests)
+const isMain = (() => {
+  try {
+    return import.meta.url === pathToFileURL(process.argv[1]).href;
+  } catch {
+    return true;
+  }
+})();
+
+if (isMain) {
+  const server = createServer();
+  server.listen(PORT, () => {
+    console.log(`agent‑proxy listening on port ${PORT}`);
+  });
+}
+
+// Export configuration that tests may need
+export { PORT };
