@@ -226,10 +226,9 @@ async function requestHandler(req, res) {
     res.end(JSON.stringify(fetchResult));
   } catch (err) {
     // Catch‑all error handler
+    console.error('Unhandled error in requestHandler:', err); // Log full error for diagnostics
     res.writeHead(500, { 'Content-Type': 'application/json' });
-    res.end(
-      JSON.stringify({ error: 'internal_server_error', detail: String(err?.message || err) })
-    );
+    res.end(JSON.stringify({ error: 'internal_server_error' }));
   }
 }
 
@@ -238,11 +237,10 @@ export function createServer() {
   return http.createServer((req, res) => {
     // Ensure the handler promise rejections are surfaced
     requestHandler(req, res).catch((err) => {
+        console.error('Unhandled error in request handler promise:', err); // Log error for diagnostics
       try {
         res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(
-          JSON.stringify({ error: 'internal_server_error', detail: String(err?.message || err) })
-        );
+        res.end(JSON.stringify({ error: 'internal_server_error' }));
       } catch {}
     });
   });
