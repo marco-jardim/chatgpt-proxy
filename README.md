@@ -22,6 +22,12 @@ custom GPT or Agent and performs outbound HTTP calls on its behalf.
   response body (JSON or text).
 - **Zero dependencies** – uses only Node.js core modules; no need to
   `npm install`.
+- **Optional OAuth 2.0** – when configured, requests must include an
+  `Authorization: Bearer <token>` header which is validated via a token
+  introspection endpoint (RFC 7662). Required scopes and audience can be
+  enforced.
+- **Debug logging** – set `DEBUG=1` to get verbose, prefixed console logs
+  that help diagnose routing, validation, and proxy behavior.
 
 ## Usage
 
@@ -61,6 +67,9 @@ Required request headers:
   caller as the ChatGPT agent.
 - `X-Bridge-Token`: value must match `BRIDGE_TOKEN` (if set). This
   ensures only your agent can use this endpoint.
+- `Authorization: Bearer <token>`: required only if OAuth is enabled
+  (see below). The token will be validated using the configured
+  introspection endpoint.
 
 The response will contain a JSON object:
 
@@ -92,6 +101,40 @@ The response will contain a JSON object:
   are supported. Extend `performFetch()` in `src/server.js` to add
   additional methods if necessary.
 
+## Configuration
+
+Environment variables control behavior. See `.env.example` for a full list.
+
+- `PORT`: HTTP port to listen on (default `8080`).
+- `EXPECTED_AGENT`: expected value of the Signature-Agent header
+  (default `https://chatgpt.com`).
+- `BRIDGE_TOKEN`: shared secret; when set, requests must include
+  `X-Bridge-Token` with this exact value.
+- `REQUEST_TIMEOUT_MS`: timeout for outbound fetches (default `25000`).
+- `DEBUG`: set to `1`, `true`, or `yes` to enable verbose logs.
+
+### OAuth 2.0 (optional)
+
+If you set `OAUTH_INTROSPECTION_URL` (and client credentials), the proxy
+will require and validate a bearer token on every `/action/fetch` call.
+
+Supported variables:
+
+- `OAUTH_INTROSPECTION_URL`: RFC 7662 token introspection endpoint URL.
+- `OAUTH_CLIENT_ID` / `OAUTH_CLIENT_SECRET`: Basic auth credentials used
+  to call the introspection endpoint.
+- `OAUTH_REQUIRED_SCOPES`: comma-separated list (e.g. `agent:proxy,write`).
+  The token must include all of these scopes.
+- `OAUTH_REQUIRED_AUDIENCE`: required audience value; token `aud` must
+  include this value.
+- `OAUTH_CACHE_TTL_MS`: cache TTL for introspection responses (default
+  `60000`).
+
+When OAuth is enabled, any error in bearer parsing, introspection, or
+policy checks (scopes/audience) results in `401` with an explanatory
+message. The bridge token check (if configured) still applies in
+addition to OAuth.
+
 ## Testing
 
 You can test the server locally using `curl`:
@@ -109,3 +152,26 @@ curl -X POST http://localhost:8080/action/fetch \
 
 This should return a JSON response containing the todo item from the
 placeholder API.
+
+With OAuth enabled, include the bearer token:
+
+```bash
+export OAUTH_INTROSPECTION_URL="http://localhost:8081/introspect"
+export OAUTH_CLIENT_ID=bridge-client
+export OAUTH_CLIENT_SECRET=bridge-secret
+export OAUTH_REQUIRED_SCOPES=agent:proxy
+
+curl -X POST http://localhost:8080/action/fetch \
+  -H 'Signature-Agent: "https://chatgpt.com"' \
+  -H 'X-Bridge-Token: my-secret' \
+  -H 'Authorization: Bearer abc.def.ghi' \
+  -H 'Content-Type: application/json' \
+  -d '{"target":"https://httpbin.org/json","method":"GET"}'
+```
+
+Enable debug logs for troubleshooting:
+
+```bash
+export DEBUG=1
+node src/server.js
+```

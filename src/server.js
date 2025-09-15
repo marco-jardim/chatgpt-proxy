@@ -32,9 +32,27 @@ function safeJsonParse(str) {
   }
 }
 
+// Helper: parse integer environment variables safely with default
+function readIntEnv(name, def) {
+  const raw = process.env[name];
+  const n = Number.parseInt(raw ?? '', 10);
+  return Number.isFinite(n) && n > 0 ? n : def;
+}
+
+// Tiny sleep utility for backoff retries
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
 // Read configuration from environment
 const PORT = parseInt(process.env.PORT || '8080', 10);
 // Read the rest from process.env at runtime (not cached) so tests/config can update without restart
+
+// Debug logger toggled by DEBUG env var ("1", "true", "yes")
+function debugLog(...args) {
+  const v = String(process.env.DEBUG || '');
+  if (v === '1' || /^(true|yes)$/i.test(v)) {
+    console.log('[agent-proxy]', ...args);
+  }
+}
 
 /**
  * Validate incoming headers to ensure the call originated from the
@@ -56,6 +74,7 @@ function validateRequest(req) {
     ''
   );
   const BRIDGE_TOKEN = process.env.BRIDGE_TOKEN || '';
+  debugLog('validateRequest: EXPECTED_AGENT', EXPECTED_AGENT, 'BRIDGE_TOKEN set', !!BRIDGE_TOKEN);
   // Ensure the signature agent header is present. The spec encloses
   // the value in double quotes; remove quotes before comparison.
   const sigAgentRaw = req.headers['signature-agent'];
@@ -116,6 +135,96 @@ function sanitizeOutboundHeaders(headers) {
   return result;
 }
 
+// ===== OAuth 2.0 Introspection (optional) =====
+// Cache for OAuth token introspection results.
+// Keyed by a composite of introspection URL + clientId + token to avoid collisions
+// across different introspection servers or client credentials (useful in tests).
+const tokenCache = new Map(); // cacheKey -> { data, expiresAt }
+
+function getBearerToken(req) {
+  const h = req.headers['authorization'] || req.headers['Authorization'];
+  if (!h) return null;
+  const m = String(h).match(/^Bearer\s+(.+)$/i);
+  return m ? m[1] : null;
+}
+
+async function oauthIntrospect(token) {
+  const url = process.env.OAUTH_INTROSPECTION_URL;
+  const clientId = process.env.OAUTH_CLIENT_ID || '';
+  const clientSecret = process.env.OAUTH_CLIENT_SECRET || '';
+  const cacheTtlMs = readIntEnv('OAUTH_CACHE_TTL_MS', 60000);
+
+  const cacheKey = `${url}::${clientId}::${token}`;
+  const now = Date.now();
+  const cached = tokenCache.get(cacheKey);
+  if (cached && cached.expiresAt > now) {
+    debugLog('oauthIntrospect: cache hit');
+    return cached.data;
+  }
+  const basic = Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
+  const body = new URLSearchParams({ token, token_type_hint: 'access_token' });
+  let resp;
+  let lastErr;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      resp = await fetch(url, {
+        method: 'POST',
+        headers: {
+          Authorization: `Basic ${basic}`,
+          'Content-Type': 'application/x-www-form-urlencoded',
+          Accept: 'application/json',
+        },
+        body: body.toString(),
+      });
+      break;
+    } catch (err) {
+      lastErr = err;
+      if (attempt < 2) {
+        await sleep(10 * (attempt + 1));
+        continue;
+      }
+      throw err;
+    }
+  }
+  const text = await resp.text();
+  const data = safeJsonParse(text) || {};
+  tokenCache.set(cacheKey, { data, expiresAt: now + cacheTtlMs });
+  debugLog('oauthIntrospect: status', resp.status, 'active', data.active === true);
+  return data;
+}
+
+async function validateOAuth(req) {
+  if (!process.env.OAUTH_INTROSPECTION_URL) return null; // Disabled by default
+  const token = getBearerToken(req);
+  if (!token) return 'missing bearer token';
+  let data;
+  try {
+    data = await oauthIntrospect(token);
+  } catch (err) {
+    debugLog('oauthIntrospect error:', err?.message || err);
+    return 'token introspection error';
+  }
+  if (!data || data.active !== true) return 'inactive or invalid access token';
+  const requiredScopes = (process.env.OAUTH_REQUIRED_SCOPES || '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (requiredScopes.length) {
+    const tokenScopes = String(data.scope || '')
+      .split(/[\s,]+/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const missing = requiredScopes.filter((s) => !tokenScopes.includes(s));
+    if (missing.length) return `missing required scope(s): ${missing.join(', ')}`;
+  }
+  const requiredAud = process.env.OAUTH_REQUIRED_AUDIENCE;
+  if (requiredAud) {
+    const aud = Array.isArray(data.aud) ? data.aud : [data.aud].filter(Boolean);
+    if (!aud.includes(requiredAud)) return 'invalid audience';
+  }
+  return null;
+}
+
 /**
  * Handle the proxying of a request. This function expects a
  * payload with the shape `{ target, method, headers?, body? }`. It
@@ -126,7 +235,7 @@ function sanitizeOutboundHeaders(headers) {
  * @returns {Promise<{status: number, headers: Record<string, string>, data: any}>}
  */
 async function performFetch(payload) {
-  const REQUEST_TIMEOUT_MS = parseInt(process.env.REQUEST_TIMEOUT_MS || '25000', 10);
+  const REQUEST_TIMEOUT_MS = readIntEnv('REQUEST_TIMEOUT_MS', 25000);
   const { target, method = 'GET', headers = {}, body } = payload;
   // Validate target
   if (!target || typeof target !== 'string' || !/^https?:\/\//i.test(target)) {
@@ -144,6 +253,7 @@ async function performFetch(payload) {
     // Set a timeout via AbortController
     signal: undefined,
   };
+  debugLog('performFetch', upperMethod, target);
   const controller = new AbortController();
   const timeoutId = setTimeout(() => {
     controller.abort(new Error('fetch timeout'));
@@ -182,6 +292,7 @@ async function requestHandler(req, res) {
   try {
     // Only allow POST on /action/fetch and GET on /healthz
     const url = new URL(req.url || '/', 'http://localhost');
+    debugLog('request', req.method, url.pathname);
     if (req.method === 'GET' && url.pathname === '/healthz') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: true }));
@@ -197,6 +308,12 @@ async function requestHandler(req, res) {
     if (errorMsg) {
       res.writeHead(401, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: errorMsg }));
+      return;
+    }
+    const oauthError = await validateOAuth(req);
+    if (oauthError) {
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: oauthError }));
       return;
     }
     // Read body
@@ -237,7 +354,7 @@ export function createServer() {
   return http.createServer((req, res) => {
     // Ensure the handler promise rejections are surfaced
     requestHandler(req, res).catch((err) => {
-        console.error('Unhandled error in request handler promise:', err); // Log error for diagnostics
+      console.error('Unhandled error in request handler promise:', err); // Log error for diagnostics
       try {
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'internal_server_error' }));
@@ -259,6 +376,12 @@ if (isMain) {
   const server = createServer();
   server.listen(PORT, () => {
     console.log(`agent‑proxy listening on port ${PORT}`);
+    if (process.env.OAUTH_INTROSPECTION_URL) {
+      console.log(
+        '[agent-proxy] OAuth introspection enabled:',
+        process.env.OAUTH_INTROSPECTION_URL
+      );
+    }
   });
 }
 
