@@ -370,3 +370,29 @@ describe('oauth introspection', () => {
     expect(String(res.body.error)).toMatch(/introspection/i);
   });
 });
+
+describe('open mode (transparent proxy)', () => {
+  it('bypasses all validations and proxies without headers', async () => {
+    // Enable open mode
+    const prevOpen = process.env.OPEN_MODE;
+    process.env.OPEN_MODE = '1';
+
+    const upstream = await startUpstream((req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, path: req.url, method: req.method }));
+    });
+
+    const res = await request
+      .post('/action/fetch')
+      .set('Content-Type', 'application/json')
+      // No Signature-Agent, no X-Bridge-Token, no Authorization
+      .send({ target: `${upstream.url}/free`, method: 'GET' });
+
+    upstream.server.close();
+    process.env.OPEN_MODE = prevOpen;
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe(200);
+    expect(res.body.data).toEqual({ ok: true, path: '/free', method: 'GET' });
+  });
+});
