@@ -112,6 +112,8 @@ Environment variables control behavior. See `.env.example` for a full list.
   `X-Bridge-Token` with this exact value.
 - `REQUEST_TIMEOUT_MS`: timeout for outbound fetches (default `25000`).
 - `DEBUG`: set to `1`, `true`, or `yes` to enable verbose logs.
+- `OPEN_MODE`: set to `1`, `true`, or `yes` to bypass all validations and act
+  as a transparent proxy. Warning: do not enable this in production.
 
 ### OAuth 2.0 (optional)
 
@@ -134,6 +136,14 @@ When OAuth is enabled, any error in bearer parsing, introspection, or
 policy checks (scopes/audience) results in `401` with an explanatory
 message. The bridge token check (if configured) still applies in
 addition to OAuth.
+
+### Open mode (transparent proxy)
+
+If you set `OPEN_MODE=1`, the server skips all validations (`Signature-Agent`,
+`X-Bridge-Token`, and OAuth). It will accept requests without those headers and
+proxy them as-is. This is handy when using it as a simple connector in Agent
+mode, but it is unsafe for exposed environments. Use only in trusted and
+isolated setups.
 
 ## Testing
 
