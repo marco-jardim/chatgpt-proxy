@@ -69,6 +69,10 @@ function debugLog(...args) {
  * @returns {string|null}
  */
 function validateRequest(req) {
+  if (String(process.env.OPEN_MODE || '').match(/^(1|true|yes)$/i)) {
+    debugLog('validateRequest: OPEN_MODE enabled, skipping header checks');
+    return null;
+  }
   const EXPECTED_AGENT = (process.env.EXPECTED_AGENT || 'https://chatgpt.com').replace(
     /^"|"$/g,
     ''
@@ -194,6 +198,10 @@ async function oauthIntrospect(token) {
 }
 
 async function validateOAuth(req) {
+  if (String(process.env.OPEN_MODE || '').match(/^(1|true|yes)$/i)) {
+    debugLog('validateOAuth: OPEN_MODE enabled, skipping OAuth checks');
+    return null;
+  }
   if (!process.env.OAUTH_INTROSPECTION_URL) return null; // Disabled by default
   const token = getBearerToken(req);
   if (!token) return 'missing bearer token';
@@ -376,6 +384,9 @@ if (isMain) {
   const server = createServer();
   server.listen(PORT, () => {
     console.log(`agent‑proxy listening on port ${PORT}`);
+    if (String(process.env.OPEN_MODE || '').match(/^(1|true|yes)$/i)) {
+      console.warn('[agent-proxy] OPEN_MODE is ENABLED. All validations are bypassed. Do NOT use in production.');
+    }
     if (process.env.OAUTH_INTROSPECTION_URL) {
       console.log(
         '[agent-proxy] OAuth introspection enabled:',
