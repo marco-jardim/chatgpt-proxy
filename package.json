@@ -1,0 +1,18 @@
+{
+  "name": "agent-proxy",
+  "version": "1.0.0",
+  "description": "Minimal Node.js backend that proxies HTTP requests for a ChatGPT agent",
+  "type": "module",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js"
+  },
+  "keywords": [
+    "chatgpt",
+    "agent",
+    "proxy",
+    "backend"
+  ],
+  "author": "",
+  "license": "MIT"
+}
