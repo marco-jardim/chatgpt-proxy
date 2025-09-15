@@ -21,8 +21,8 @@
   "license": "MIT",
   "devDependencies": {
     "prettier": "^3.3.3",
-    "@vitest/coverage-v8": "^2.0.0",
+    "@vitest/coverage-v8": "^3.2.4",
     "supertest": "^7.0.0",
-    "vitest": "^2.0.0"
+    "vitest": "^3.2.4"
   }
 }
